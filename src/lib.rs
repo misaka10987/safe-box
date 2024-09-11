@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     ops::DerefMut,
     path::Path,
-    sync::{Mutex, RwLock},
+    sync::RwLock,
     time::{Duration, SystemTime},
 };
 
@@ -12,9 +12,9 @@ use argon2::{Argon2, Params, PasswordHash};
 use base64::Engine;
 use getrandom::getrandom;
 use sqlx::{query, sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
-
 use crypto::password_hash::SaltString;
 use rand_core::OsRng;
+use async_mutex::Mutex as AsyncMutex;
 
 fn salt() -> SaltString {
     SaltString::generate(OsRng)
@@ -28,7 +28,7 @@ fn gen_token() -> String {
 
 /// Interface to the password database.
 pub struct SafeBox {
-    conn: Mutex<SqliteConnection>,
+    conn: AsyncMutex<SqliteConnection>,
     param: Params,
     token: RwLock<HashMap<String, (String, SystemTime)>>,
 }
@@ -53,7 +53,7 @@ impl SafeBox {
         let mut conn = SqliteConnection::connect_with(&opt).await?;
         query(Q_INIT).execute(&mut conn).await?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: AsyncMutex::new(conn),
             param: Params::DEFAULT,
             token: RwLock::new(HashMap::new()),
         })
@@ -71,7 +71,7 @@ impl SafeBox {
     /// Create new user entry with `user`name and `pass`word.
     pub async fn create(&self, user: &str, pass: &str) -> Result<(), Error> {
         let q = query("SELECT NULL FROM main WHERE user = ?").bind(user);
-        let v = q.fetch_all(self.conn.lock().unwrap().deref_mut()).await?;
+        let v = q.fetch_all(self.conn.lock().await.deref_mut()).await?;
         if v.len() > 0 {
             return Err(Error::UserAlreadyExist(user.to_string()));
         }
@@ -79,7 +79,7 @@ impl SafeBox {
         let q = query("INSERT INTO main (user, phc) VALUES (?, ?)")
             .bind(user)
             .bind(p);
-        q.execute(self.conn.lock().unwrap().deref_mut()).await?;
+        q.execute(self.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 
@@ -87,7 +87,7 @@ impl SafeBox {
     /// Return a new token if successful.
     pub async fn verify(&self, user: &str, pass: &str) -> Result<String, Error> {
         let query = query("SELECT phc FROM main WHERE user = ?").bind(user);
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().await;
         let v = query.fetch_all(conn.deref_mut()).await?;
         if v.len() > 1 {
             return Err(Error::InvalidData(format!(
@@ -98,9 +98,9 @@ impl SafeBox {
         let p = PasswordHash::new(p)?;
         let res = p.verify_password(&[&self.hasher()], pass);
         if let Err(crypto::password_hash::Error::Password) = res {
-            return Err(Error::BadPassword {
-                username: user.to_string(),
-                bad_password: pass.to_string(),
+            return Err(Error::BadPass {
+                user: user.to_string(),
+                pass: pass.to_string(),
             });
         }
         res?;
@@ -134,7 +134,7 @@ impl SafeBox {
         let q = query("UPDATE main SET phc = ? WHERE user = ?")
             .bind(p)
             .bind(user);
-        q.execute(self.conn.lock().unwrap().deref_mut()).await?;
+        q.execute(self.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 
@@ -142,7 +142,7 @@ impl SafeBox {
     pub async fn delete(&self, user: &str, pass: &str) -> Result<(), Error> {
         self.verify(user, pass).await?;
         let q = query("DELETE FROM main WHERE user = ?").bind(user);
-        q.execute(self.conn.lock().unwrap().deref_mut()).await?;
+        q.execute(self.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 }

@@ -15,10 +15,10 @@ pub enum SafeBoxError {
     #[error("user '{0}' already exists")]
     UserAlreadyExist(String),
 
-    #[error("invalid password '{bad_password}' for user 'username'")]
-    BadPassword {
-        username: String,
-        bad_password: String,
+    #[error("invalid password '{pass}' for user 'username'")]
+    BadPass {
+        user: String,
+        pass: String,
     },
 
     #[error("invalid token '{0}'")]

@@ -1,6 +1,6 @@
 [package]
 name = "safe-box"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["misaka10987 <misaka10987@outlook.com>"]
 description = "Utilities for managing a password database."
@@ -16,8 +16,8 @@ crypto = { version = "0.5.1", features = ["password-hash"] }
 argon2 = { version = "0.5.3" }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 sqlx = { version = "0.8.1", features = ["sqlite"] }
-trace = "0.1.7"
 thiserror = "1.0.63"
 getrandom = "0.2.15"
 base64 = "0.22.1"
 smol = "2.0.2"
+async-mutex = "1.4.0"
