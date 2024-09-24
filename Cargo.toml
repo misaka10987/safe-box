@@ -1,6 +1,6 @@
 [package]
 name = "safe-box"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["misaka10987 <misaka10987@outlook.com>"]
 description = "Utilities for managing a password database."

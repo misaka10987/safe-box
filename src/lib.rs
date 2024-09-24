@@ -9,12 +9,12 @@ use std::{
 };
 
 use argon2::{Argon2, Params, PasswordHash};
-use base64::Engine;
-use getrandom::getrandom;
-use sqlx::{query, sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
-use crypto::password_hash::SaltString;
-use rand_core::OsRng;
 use async_mutex::Mutex as AsyncMutex;
+use base64::Engine;
+use crypto::password_hash::SaltString;
+use getrandom::getrandom;
+use rand_core::OsRng;
+use sqlx::{query, sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
 
 fn salt() -> SaltString {
     SaltString::generate(OsRng)
@@ -73,7 +73,7 @@ impl SafeBox {
         let q = query("SELECT NULL FROM main WHERE user = ?").bind(user);
         let v = q.fetch_all(self.conn.lock().await.deref_mut()).await?;
         if v.len() > 0 {
-            return Err(Error::UserAlreadyExist(user.to_string()));
+            return Err(Error::UserAlreadyExist(user.to_owned()));
         }
         let p = PasswordHash::generate(self.hasher(), pass, &salt())?.to_string();
         let q = query("INSERT INTO main (user, phc) VALUES (?, ?)")
@@ -89,18 +89,18 @@ impl SafeBox {
         let query = query("SELECT phc FROM main WHERE user = ?").bind(user);
         let mut conn = self.conn.lock().await;
         let v = query.fetch_all(conn.deref_mut()).await?;
-        if v.len() > 1 {
-            return Err(Error::InvalidData(format!(
-                "multiple entries for user '{user}'"
-            )));
-        }
+        match v.len() {
+            0 => return Err(Error::UserNotExist(user.to_owned())),
+            2.. => return Err(Error::InvalidData(format!("duplicate user '{user}'"))),
+            _ => (),
+        };
         let p = v[0].try_get("phc")?;
         let p = PasswordHash::new(p)?;
         let res = p.verify_password(&[&self.hasher()], pass);
         if let Err(crypto::password_hash::Error::Password) = res {
             return Err(Error::BadPass {
-                user: user.to_string(),
-                pass: pass.to_string(),
+                user: user.to_owned(),
+                pass: pass.to_owned(),
             });
         }
         res?;
@@ -108,7 +108,7 @@ impl SafeBox {
         self.token
             .write()
             .unwrap()
-            .insert(token.clone(), (user.to_string(), SystemTime::now()));
+            .insert(token.clone(), (user.to_owned(), SystemTime::now()));
         Ok(token)
     }
 
@@ -120,11 +120,11 @@ impl SafeBox {
             let now = SystemTime::now();
             if let Ok(d) = now.duration_since(*t) {
                 if d < Duration::from_secs(300) {
-                    return Ok(s.to_string());
+                    return Ok(s.to_owned());
                 }
             }
         }
-        Err(Error::BadToken(token.to_string()))
+        Err(Error::BadToken(token.to_owned()))
     }
 
     /// Update a user's password to `new`.
