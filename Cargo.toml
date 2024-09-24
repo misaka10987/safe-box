@@ -19,5 +19,4 @@ sqlx = { version = "0.8.1", features = ["sqlite"] }
 thiserror = "1.0.63"
 getrandom = "0.2.15"
 base64 = "0.22.1"
-smol = "2.0.2"
 async-mutex = "1.4.0"
