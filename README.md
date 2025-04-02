@@ -1,2 +1,2 @@
-# safe-box
-Utilities for managing a password database
+# simple-safe
+Utilities for managing a hashed password database with session tokens (formerly named safe-box).
