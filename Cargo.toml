@@ -12,11 +12,9 @@ keywords = ["safe-box", "password", "safety"]
 license = "MIT"
 
 [dependencies]
-crypto = { version = "0.5.1", features = ["password-hash"] }
-argon2 = { version = "0.5.3" }
-rand_core = { version = "0.6.4", features = ["getrandom"] }
 sqlx = { version = "0.8.1", features = ["sqlite"] }
-thiserror = "1.0.63"
-getrandom = "0.2.15"
+thiserror = "2.0.12"
+getrandom = "0.3.2"
 base64 = "0.22.1"
 async-mutex = "1.4.0"
+rust-argon2 = "2.1.0"
