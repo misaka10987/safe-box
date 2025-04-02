@@ -19,18 +19,18 @@ fn gen_salt() -> [u8; 64] {
 }
 
 /// Interface to the password database.
-pub struct SafeBox {
+pub struct Safe {
     conn: AsyncMutex<SqliteConnection>,
     argon2: argon2::Config<'static>,
     token: RwLock<HashMap<String, (String, SystemTime)>>,
 }
 
-pub use err::SafeBoxError as Error;
+pub use err::Error;
 
 /// Initialize the database.
 const Q_INIT: &str = "CREATE TABLE IF NOT EXISTS main (user TEXT PRIMARY KEY, phc TEXT);";
 
-impl SafeBox {
+impl Safe {
     /// Open an SQLite connection with specified database file and create a `SafeBox`.
     /// # Example
     /// ```

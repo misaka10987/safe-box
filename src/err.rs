@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum SafeBoxError {
+pub enum Error {
     /// Database error.
     #[error(transparent)]
     DB(#[from] sqlx::error::Error),

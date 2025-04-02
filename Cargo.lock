@@ -848,18 +848,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
 
 [[package]]
-name = "safe-box"
-version = "0.2.0"
-dependencies = [
- "async-mutex",
- "base64 0.22.1",
- "getrandom 0.3.2",
- "rust-argon2",
- "sqlx",
- "thiserror 2.0.12",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,6 +933,18 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core",
+]
+
+[[package]]
+name = "simple-safe"
+version = "0.2.0"
+dependencies = [
+ "async-mutex",
+ "base64 0.22.1",
+ "getrandom 0.3.2",
+ "rust-argon2",
+ "sqlx",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

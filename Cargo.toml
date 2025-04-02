@@ -1,14 +1,14 @@
 [package]
-name = "safe-box"
+name = "simple-safe"
 version = "0.2.0"
 edition = "2021"
 authors = ["misaka10987 <misaka10987@outlook.com>"]
 description = "Utilities for managing a password database."
-documentation = "https://github.com/misaka10987/safe-box"
-homepage = "https://github.com/misaka10987/safe-box"
-repository = "https://github.com/misaka10987/safe-box"
+documentation = "https://github.com/misaka10987/simple-safe"
+homepage = "https://github.com/misaka10987/simple-safe"
+repository = "https://github.com/misaka10987/simple-safe"
 readme = "README.md"
-keywords = ["safe-box", "password", "safety"]
+keywords = ["safe", "password", "sqlite"]
 license = "MIT"
 
 [dependencies]
