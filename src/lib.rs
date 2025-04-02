@@ -8,28 +8,20 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use argon2::{Argon2, Params, PasswordHash};
 use async_mutex::Mutex as AsyncMutex;
-use base64::Engine;
-use crypto::password_hash::SaltString;
-use getrandom::getrandom;
-use rand_core::OsRng;
+use base64::{prelude::BASE64_STANDARD, Engine};
 use sqlx::{query, sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
 
-fn salt() -> SaltString {
-    SaltString::generate(OsRng)
-}
-
-fn gen_token() -> String {
-    let mut buf = [0u8; 32];
-    getrandom(&mut buf).unwrap();
-    base64::engine::general_purpose::STANDARD.encode(buf)
+fn gen_salt() -> [u8; 64] {
+    let mut buf = [0u8; 64];
+    getrandom::fill(&mut buf).unwrap();
+    buf
 }
 
 /// Interface to the password database.
 pub struct SafeBox {
     conn: AsyncMutex<SqliteConnection>,
-    param: Params,
+    argon2: argon2::Config<'static>,
     token: RwLock<HashMap<String, (String, SystemTime)>>,
 }
 
@@ -54,18 +46,49 @@ impl SafeBox {
         query(Q_INIT).execute(&mut conn).await?;
         Ok(Self {
             conn: AsyncMutex::new(conn),
-            param: Params::DEFAULT,
+            argon2: argon2::Config::default(),
             token: RwLock::new(HashMap::new()),
         })
     }
 
-    /// Instantantiate a hasher with `self.param`.
-    fn hasher(&self) -> Argon2<'static> {
-        Argon2::new(
-            argon2::Algorithm::Argon2id,
-            argon2::Version::V0x13,
-            self.param.clone(),
-        )
+    /// Issue a token to the speficied user.
+    pub fn issue_token(&self, user: &str) -> String {
+        let mut buf = [0u8; 64];
+        getrandom::fill(&mut buf).unwrap();
+        let token = BASE64_STANDARD.encode(buf);
+        self.token
+            .write()
+            .unwrap()
+            .insert(token.clone(), (user.to_owned(), SystemTime::now()));
+        return token;
+    }
+
+    /// Invalidate a token.
+    pub fn invalidate_token(&self, token: &str) {
+        self.token.write().unwrap().remove(token);
+    }
+
+    /// Invalidate all tokens related to specified user.
+    pub fn invalidate_user_token(&self, user: &str) {
+        self.token.write().unwrap().retain(|_, (u, _)| u != user);
+    }
+
+    /// Make all tokens older than `duration` expire.
+    pub fn expire_token(&self, duration: Duration) {
+        self.token.write().unwrap().retain(|_, (_, time)| {
+            SystemTime::now()
+                .duration_since(*time)
+                .is_ok_and(|d| d < duration)
+        });
+    }
+
+    /// Count the current user number.
+    pub async fn user_cnt(&self) -> Result<usize, Error> {
+        let cnt: u64 = query("SELECT COUNT(*) FROM main")
+            .fetch_one(self.conn.lock().await.deref_mut())
+            .await?
+            .get(0);
+        Ok(cnt as usize)
     }
 
     /// Create new user entry with `user`name and `pass`word.
@@ -75,17 +98,17 @@ impl SafeBox {
         if v.len() > 0 {
             return Err(Error::UserAlreadyExist(user.to_owned()));
         }
-        let p = PasswordHash::generate(self.hasher(), pass, &salt())?.to_string();
-        let q = query("INSERT INTO main (user, phc) VALUES (?, ?)")
+        let hashed = argon2::hash_encoded(pass.as_bytes(), &gen_salt(), &self.argon2)?;
+        let query = query("INSERT INTO main (user, phc) VALUES (?, ?)")
             .bind(user)
-            .bind(p);
-        q.execute(self.conn.lock().await.deref_mut()).await?;
+            .bind(hashed);
+        query.execute(self.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 
     /// Verify the provided `user`name and `pass`word.
     /// Return a new token if successful.
-    pub async fn verify(&self, user: &str, pass: &str) -> Result<String, Error> {
+    pub async fn verify(&self, user: &str, pass: &str) -> Result<bool, Error> {
         let query = query("SELECT phc FROM main WHERE user = ?").bind(user);
         let mut conn = self.conn.lock().await;
         let v = query.fetch_all(conn.deref_mut()).await?;
@@ -95,54 +118,32 @@ impl SafeBox {
             _ => (),
         };
         let p = v[0].try_get("phc")?;
-        let p = PasswordHash::new(p)?;
-        let res = p.verify_password(&[&self.hasher()], pass);
-        if let Err(crypto::password_hash::Error::Password) = res {
-            return Err(Error::BadPass {
-                user: user.to_owned(),
-                pass: pass.to_owned(),
-            });
-        }
-        res?;
-        let token = gen_token();
-        self.token
-            .write()
-            .unwrap()
-            .insert(token.clone(), (user.to_owned(), SystemTime::now()));
-        Ok(token)
+        let res = argon2::verify_encoded(p, pass.as_bytes())?;
+        Ok(res)
     }
 
     /// Verify the provided `token`.
     /// Returns the user it belongs to if valid.
-    pub fn verify_token(&self, token: &str) -> Result<String, Error> {
+    pub fn verify_token(&self, token: &str) -> Option<String> {
         let map = self.token.read().unwrap();
-        if let Some((s, t)) = map.get(token) {
-            let now = SystemTime::now();
-            if let Ok(d) = now.duration_since(*t) {
-                if d < Duration::from_secs(300) {
-                    return Ok(s.to_owned());
-                }
-            }
-        }
-        Err(Error::BadToken(token.to_owned()))
+        map.get(token).map(|(user, _)| user.clone())
     }
 
     /// Update a user's password to `new`.
-    pub async fn update(&self, user: &str, pass: &str, new: &str) -> Result<(), Error> {
-        self.verify(user, pass).await?;
-        let p = PasswordHash::generate(self.hasher(), new, &salt())?.to_string();
-        let q = query("UPDATE main SET phc = ? WHERE user = ?")
-            .bind(p)
+    pub async fn update(&self, user: &str, new_pass: &str) -> Result<(), Error> {
+        self.invalidate_user_token(user);
+        let hashed = argon2::hash_encoded(new_pass.as_bytes(), &gen_salt(), &self.argon2)?;
+        let query = query("UPDATE main SET phc = ? WHERE user = ?")
+            .bind(hashed)
             .bind(user);
-        q.execute(self.conn.lock().await.deref_mut()).await?;
+        query.execute(self.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 
-    /// Delate a user entry.
-    pub async fn delete(&self, user: &str, pass: &str) -> Result<(), Error> {
-        self.verify(user, pass).await?;
-        let q = query("DELETE FROM main WHERE user = ?").bind(user);
-        q.execute(self.conn.lock().await.deref_mut()).await?;
+    /// Delate a user.
+    pub async fn delete(&self, user: &str) -> Result<(), Error> {
+        let query = query("DELETE FROM main WHERE user = ?").bind(user);
+        query.execute(self.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 }
