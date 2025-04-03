@@ -1,6 +1,6 @@
 [package]
 name = "simple-safe"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["misaka10987 <misaka10987@outlook.com>"]
 description = "Utilities for managing a password database."
@@ -18,3 +18,4 @@ getrandom = "0.3.2"
 base64 = "0.22.1"
 async-mutex = "1.4.0"
 rust-argon2 = "2.1.0"
+tracing = "0.1.41"
