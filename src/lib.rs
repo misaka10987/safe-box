@@ -13,6 +13,7 @@ use base64::{prelude::BASE64_STANDARD, Engine};
 use sqlx::{query, sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
 
 pub use err::Error;
+use tracing::{debug, info, trace};
 
 fn gen_salt() -> [u8; 64] {
     let mut buf = [0u8; 64];
@@ -37,10 +38,12 @@ impl Safe {
     /// Open an SQLite connection with specified database file and create a `SafeBox`.
     pub async fn new(p: impl AsRef<Path>) -> Result<Self, Error> {
         let opt = SqliteConnectOptions::default()
-            .filename(p)
+            .filename(&p)
             .create_if_missing(true);
         let mut conn = SqliteConnection::connect_with(&opt).await?;
+        info!("connected to {:?}", p.as_ref());
         query(Q_INIT).execute(&mut conn).await?;
+        trace!("password database initialized");
         Ok(Self(Arc::new(SafeInst {
             conn: AsyncMutex::new(conn),
             argon2: argon2::Config::default(),
@@ -58,6 +61,7 @@ impl Safe {
             .write()
             .unwrap()
             .insert(token.clone(), (user.to_owned(), SystemTime::now()));
+        trace!("issued token '{}**' for '{user}'", &token[0..4]);
         return token;
     }
 
@@ -76,20 +80,26 @@ impl Safe {
     /// ```
     pub fn invalidate_token(&self, token: &str) {
         self.0.token.write().unwrap().remove(token);
+        trace!("invalidated token '{}**'", token);
     }
 
     /// Invalidate all tokens related to specified user.
     pub fn invalidate_user_token(&self, user: &str) {
         self.0.token.write().unwrap().retain(|_, (u, _)| u != user);
+        trace!("invalidated user session '{user}'")
     }
 
     /// Make all tokens older than `duration` expire.
     pub fn expire_token(&self, duration: Duration) {
-        self.0.token.write().unwrap().retain(|_, (_, time)| {
+        let mut token = self.0.token.write().unwrap();
+        let prev = token.len();
+        token.retain(|_, (_, time)| {
             SystemTime::now()
                 .duration_since(*time)
                 .is_ok_and(|d| d < duration)
         });
+        let diff = prev - token.len();
+        trace!("expired {diff} tokens");
     }
 
     /// Count the current user number.
@@ -113,6 +123,7 @@ impl Safe {
             .bind(user)
             .bind(hashed);
         query.execute(self.0.conn.lock().await.deref_mut()).await?;
+        info!("created user '{user}'");
         Ok(())
     }
 
@@ -129,6 +140,9 @@ impl Safe {
         };
         let p = v[0].try_get("phc")?;
         let res = argon2::verify_encoded(p, pass.as_bytes())?;
+        if res {
+            debug!("authorized '{user}' with password");
+        }
         Ok(res)
     }
 
@@ -147,6 +161,7 @@ impl Safe {
             .bind(hashed)
             .bind(user);
         query.execute(self.0.conn.lock().await.deref_mut()).await?;
+        debug!("updated password for '{user}'");
         Ok(())
     }
 
@@ -154,6 +169,7 @@ impl Safe {
     pub async fn delete(&self, user: &str) -> Result<(), Error> {
         let query = query("DELETE FROM main WHERE user = ?").bind(user);
         query.execute(self.0.conn.lock().await.deref_mut()).await?;
+        info!("deleted user '{user}'");
         Ok(())
     }
 }
