@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     ops::DerefMut,
     path::Path,
-    sync::RwLock,
+    sync::{Arc, RwLock},
     time::{Duration, SystemTime},
 };
 
@@ -12,43 +12,40 @@ use async_mutex::Mutex as AsyncMutex;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use sqlx::{query, sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
 
+pub use err::Error;
+
 fn gen_salt() -> [u8; 64] {
     let mut buf = [0u8; 64];
     getrandom::fill(&mut buf).unwrap();
     buf
 }
 
-/// Interface to the password database.
-pub struct Safe {
+struct SafeInst {
     conn: AsyncMutex<SqliteConnection>,
     argon2: argon2::Config<'static>,
     token: RwLock<HashMap<String, (String, SystemTime)>>,
 }
 
-pub use err::Error;
+/// Interface to the password database.
+#[derive(Clone)]
+pub struct Safe(Arc<SafeInst>);
 
 /// Initialize the database.
 const Q_INIT: &str = "CREATE TABLE IF NOT EXISTS main (user TEXT PRIMARY KEY, phc TEXT);";
 
 impl Safe {
     /// Open an SQLite connection with specified database file and create a `SafeBox`.
-    /// # Example
-    /// ```
-    /// use safe_box::SafeBox;
-    ///
-    /// let safe = SafeBox::new("secure.db").await.unwrap();
-    /// ```
     pub async fn new(p: impl AsRef<Path>) -> Result<Self, Error> {
         let opt = SqliteConnectOptions::default()
             .filename(p)
             .create_if_missing(true);
         let mut conn = SqliteConnection::connect_with(&opt).await?;
         query(Q_INIT).execute(&mut conn).await?;
-        Ok(Self {
+        Ok(Self(Arc::new(SafeInst {
             conn: AsyncMutex::new(conn),
             argon2: argon2::Config::default(),
             token: RwLock::new(HashMap::new()),
-        })
+        })))
     }
 
     /// Issue a token to the speficied user.
@@ -56,7 +53,8 @@ impl Safe {
         let mut buf = [0u8; 64];
         getrandom::fill(&mut buf).unwrap();
         let token = BASE64_STANDARD.encode(buf);
-        self.token
+        self.0
+            .token
             .write()
             .unwrap()
             .insert(token.clone(), (user.to_owned(), SystemTime::now()));
@@ -64,18 +62,30 @@ impl Safe {
     }
 
     /// Invalidate a token.
+    /// # Example
+    /// ```
+    /// use simple_safe::Safe;
+    ///
+    /// let safe = Safe::new("password.db").await.unwrap();
+    ///
+    /// let token = safe.issue_token("alice");
+    /// assert!(safe.verify_token(&token).unwrap() == "alice");
+    ///
+    /// safe.invalidate_token(&token);
+    /// assert!(safe.verify_token(&token).is_none())
+    /// ```
     pub fn invalidate_token(&self, token: &str) {
-        self.token.write().unwrap().remove(token);
+        self.0.token.write().unwrap().remove(token);
     }
 
     /// Invalidate all tokens related to specified user.
     pub fn invalidate_user_token(&self, user: &str) {
-        self.token.write().unwrap().retain(|_, (u, _)| u != user);
+        self.0.token.write().unwrap().retain(|_, (u, _)| u != user);
     }
 
     /// Make all tokens older than `duration` expire.
     pub fn expire_token(&self, duration: Duration) {
-        self.token.write().unwrap().retain(|_, (_, time)| {
+        self.0.token.write().unwrap().retain(|_, (_, time)| {
             SystemTime::now()
                 .duration_since(*time)
                 .is_ok_and(|d| d < duration)
@@ -85,7 +95,7 @@ impl Safe {
     /// Count the current user number.
     pub async fn user_cnt(&self) -> Result<usize, Error> {
         let cnt: u64 = query("SELECT COUNT(*) FROM main")
-            .fetch_one(self.conn.lock().await.deref_mut())
+            .fetch_one(self.0.conn.lock().await.deref_mut())
             .await?
             .get(0);
         Ok(cnt as usize)
@@ -94,15 +104,15 @@ impl Safe {
     /// Create new user entry with `user`name and `pass`word.
     pub async fn create(&self, user: &str, pass: &str) -> Result<(), Error> {
         let q = query("SELECT NULL FROM main WHERE user = ?").bind(user);
-        let v = q.fetch_all(self.conn.lock().await.deref_mut()).await?;
+        let v = q.fetch_all(self.0.conn.lock().await.deref_mut()).await?;
         if v.len() > 0 {
             return Err(Error::UserAlreadyExist(user.to_owned()));
         }
-        let hashed = argon2::hash_encoded(pass.as_bytes(), &gen_salt(), &self.argon2)?;
+        let hashed = argon2::hash_encoded(pass.as_bytes(), &gen_salt(), &self.0.argon2)?;
         let query = query("INSERT INTO main (user, phc) VALUES (?, ?)")
             .bind(user)
             .bind(hashed);
-        query.execute(self.conn.lock().await.deref_mut()).await?;
+        query.execute(self.0.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 
@@ -110,7 +120,7 @@ impl Safe {
     /// Return a new token if successful.
     pub async fn verify(&self, user: &str, pass: &str) -> Result<bool, Error> {
         let query = query("SELECT phc FROM main WHERE user = ?").bind(user);
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.0.conn.lock().await;
         let v = query.fetch_all(conn.deref_mut()).await?;
         match v.len() {
             0 => return Err(Error::UserNotExist(user.to_owned())),
@@ -125,25 +135,25 @@ impl Safe {
     /// Verify the provided `token`.
     /// Returns the user it belongs to if valid.
     pub fn verify_token(&self, token: &str) -> Option<String> {
-        let map = self.token.read().unwrap();
+        let map = self.0.token.read().unwrap();
         map.get(token).map(|(user, _)| user.clone())
     }
 
     /// Update a user's password to `new`.
     pub async fn update(&self, user: &str, new_pass: &str) -> Result<(), Error> {
         self.invalidate_user_token(user);
-        let hashed = argon2::hash_encoded(new_pass.as_bytes(), &gen_salt(), &self.argon2)?;
+        let hashed = argon2::hash_encoded(new_pass.as_bytes(), &gen_salt(), &self.0.argon2)?;
         let query = query("UPDATE main SET phc = ? WHERE user = ?")
             .bind(hashed)
             .bind(user);
-        query.execute(self.conn.lock().await.deref_mut()).await?;
+        query.execute(self.0.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 
     /// Delate a user.
     pub async fn delete(&self, user: &str) -> Result<(), Error> {
         let query = query("DELETE FROM main WHERE user = ?").bind(user);
-        query.execute(self.conn.lock().await.deref_mut()).await?;
+        query.execute(self.0.conn.lock().await.deref_mut()).await?;
         Ok(())
     }
 }
